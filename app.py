@@ -5,36 +5,15 @@ import os
 from PIL import Image
 import matplotlib.pyplot as plt
 from werkzeug.utils import secure_filename
-import requests
 
 IMG_HEIGHT, IMG_WIDTH = 256, 256
 UPLOAD_FOLDER = 'static/uploads'
-MODEL_PATH = 'model_for_lane.keras'
-
-# Google Drive File ID
-GDRIVE_FILE_ID = '1L_-ELTZSR_3PKBiDeVxUr2XNXQmJhMxz'
-
-def download_model_if_needed():
-    if not os.path.exists(MODEL_PATH):
-        print("Downloading model from Google Drive...")
-        url = f"https://drive.google.com/uc?export=download&id={GDRIVE_FILE_ID}"
-        response = requests.get(url)
-        if response.status_code == 200:
-            with open(MODEL_PATH, 'wb') as f:
-                f.write(response.content)
-            print("Model downloaded successfully.")
-        else:
-            raise Exception(f"Failed to download model. Status code: {response.status_code}")
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Ensure upload folder exists
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Download and load the model
-download_model_if_needed()
-model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+# Load your trained model
+model = tf.keras.models.load_model("model_for_lane.keras", compile=False)
 
 def preprocess_image(image_path):
     img = Image.open(image_path).convert("RGB")
@@ -49,6 +28,7 @@ def predict_mask(image_path):
     pred_mask = (pred_mask > 0.5).astype(np.uint8) * 255
     pred_mask = np.squeeze(pred_mask)
 
+    # Save the mask using matplotlib
     mask_img_path = os.path.join(app.config['UPLOAD_FOLDER'], f"mask_{os.path.basename(image_path)}")
     plt.imsave(mask_img_path, pred_mask, cmap='gray')
     return mask_img_path
@@ -63,6 +43,7 @@ def index():
             file.save(file_path)
 
             mask_path = predict_mask(file_path)
+
             return render_template('index.html', uploaded=True, img_path=file_path, mask_path=mask_path)
     return render_template('index.html', uploaded=False)
 
