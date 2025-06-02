@@ -6,6 +6,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from werkzeug.utils import secure_filename
 
+tf.config.set_visible_devices([], 'GPU')
+
 IMG_HEIGHT, IMG_WIDTH = 256, 256
 
 UPLOAD_FOLDER = 'static/uploads'
