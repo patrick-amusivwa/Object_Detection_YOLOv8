@@ -7,7 +7,9 @@ import matplotlib.pyplot as plt
 from werkzeug.utils import secure_filename
 
 IMG_HEIGHT, IMG_WIDTH = 256, 256
+
 UPLOAD_FOLDER = 'static/uploads'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)  # This creates the folder if it doesn't exist
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
