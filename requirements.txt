@@ -2,6 +2,6 @@ numpy
 pandas
 matplotlib
 keras
-tensorflow
+tensorflow==2.19.0rc0
 Pillow
 ipython
