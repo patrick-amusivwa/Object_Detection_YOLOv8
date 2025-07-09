@@ -1,7 +1,7 @@
-tensorflow==2.17.1
-keras
-streamlit
 numpy
 pandas
 matplotlib
+keras
+tensorflow
 Pillow
+ipython
