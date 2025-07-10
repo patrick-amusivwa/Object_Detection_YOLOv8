@@ -1,65 +1,77 @@
 
-# 🚦 Cascaded U-Net Lane Detection Web App
+# 🛣️ Lane Detection Using Cascaded U-Net
 
-A real-time web application to detect road lanes from images using a cascaded U-Net architecture. Built with Flask, OpenCV, and deployed on Render.
+A deep learning web app for real-time **lane detection** using a **Cascaded U-Net architecture**, built with **Streamlit** and deployed on **Streamlit Cloud**.
 
-🌐 **Live Demo:**  
-[![Live Demo](https://img.shields.io/badge/Visit%20App-Click%20Here-blue?style=for-the-badge)](https://lane-detection-cascaded-unet.onrender.com/)
+🎯 Ideal for autonomous driving research, computer vision learning, and road safety applications.
+
+---
+
+## 🌐 Live Demo
+
+[![Streamlit App](https://img.shields.io/badge/Visit%20App-Click%20Here-blue?style=for-the-badge)](https://lane-detection-cascaded-unet.streamlit.app/)
 
 ---
 
 ## 🚀 Features
 
-- Upload road images (JPEG/PNG).
-- Predict lane segmentation using a U-Net-based cascaded deep learning model.
-- View original and predicted images side by side.
-- Clean, responsive UI with Bootstrap.
-- Deployed on Render using Flask + Gunicorn.
+- 📤 Upload road images (JPG/PNG)
+- 🤖 Predict lane segmentation using a Cascaded U-Net model
+- 🖼️ Display original and predicted lane masks side-by-side
+- 📁 Saves uploaded and predicted images in separate folders
+- ⚡ Clean, fast, and fully interactive UI using Streamlit
+- ☁️ Fully cloud-hosted – no setup needed to test
 
 ---
 
-## 🛠️ Tech Stack
+## 🧠 Tech Stack
 
-- Python 3.x
-- Flask + Gunicorn
-- HTML, CSS, Bootstrap
-- OpenCV, NumPy, Pillow
-- Render (Cloud Deployment)
+- **Frontend/Backend**: Streamlit
+- **Deep Learning**: TensorFlow / Keras
+- **Image Processing**: NumPy, Pillow
+- **Model**: Cascaded U-Net for binary lane segmentation
+- **Deployment**: Streamlit Cloud
 
 ---
 
 ## 📁 Project Structure
 
 ```
+
 lane-detection-app/
-├── app.py
-├── templates/
-│   └── index.html
-├── uploads/
-│   └── (uploaded images)
-├── predictions/
-│   └── (output lane mask images)
-├── requirements.txt
-├── README.md
-```
+├── app.py                    # Streamlit web app
+├── model\_for\_lane.keras      # Pre-trained Cascaded U-Net model
+├── static/
+│   ├── uploaded/             # Folder for uploaded road images
+│   └── predicted/            # Folder for predicted lane mask outputs
+├── upload\_image/
+│   ├── 1.jpg                 # Sample image
+│   └── road.webp             # Sample image
+├── requirements.txt          # Python dependencies
+├── README.md                 # Project documentation
+├── LICENSE                   # License info (MIT)
+├── .gitignore                # Files ignored by Git
+
+````
 
 ---
 
-## ⚙️ Local Setup
+## ⚙️ Getting Started Locally
 
 ### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/yourusername/lane-detection-app.git
 cd lane-detection-app
-```
+````
 
-### 2. Set Up a Virtual Environment
+### 2. Create and Activate Virtual Environment
 
 ```bash
 python -m venv venv
-source venv/bin/activate       # Mac/Linux
-venv\Scripts\activate          # Windows
+# Activate it
+source venv/bin/activate        # macOS/Linux
+venv\Scripts\activate           # Windows
 ```
 
 ### 3. Install Dependencies
@@ -68,57 +80,43 @@ venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-### 4. Run Locally
+### 4. Run the App
 
 ```bash
-python app.py
+streamlit run app.py
 ```
 
-Open `http://127.0.0.1:5000/` in your browser.
+Then open the app in your browser:
+**[http://localhost:8501](http://localhost:8501)**
 
 ---
 
-## 🖼️ Usage
+## 🖼️ How to Use
 
-1. Click **Choose Image** to upload a road scene image.
-2. Click **Predict Lane** to generate the lane mask.
-3. View the input and output images side-by-side.
+1. Upload a road scene image using the file uploader.
+2. The model processes the image and generates a binary mask for detected lanes.
+3. View both **original** and **predicted** images side-by-side.
 
----
+Uploaded and output images are saved to:
 
-## 🌍 Deployment on Render
-
-The app is deployed at:  
-🔗 **[https://lane-detection-cascaded-unet.onrender.com](https://lane-detection-cascaded-unet.onrender.com)**
-
-### Render Configuration Tips
-
-- **Start Command:**
-  ```bash
-  gunicorn app:app
-  ```
-- **Build Command:**
-  ```bash
-  pip install -r requirements.txt
-  ```
-- **Python Version:**
-  Use `runtime.txt` or set in `render.yaml`.
+* 📁 `static/uploaded/` — original images
+* 📁 `static/predicted/` — predicted lane masks
 
 ---
 
 ## 📦 Requirements
 
-`requirements.txt` should contain:
+Your `requirements.txt` should include:
 
 ```
-Flask
-gunicorn
+streamlit
+tensorflow
 numpy
-opencv-python
 Pillow
+matplotlib
 ```
 
-Include any model-specific libraries as needed.
+Add any other libraries used for your model or preprocessing.
 
 ---
 
@@ -130,5 +128,10 @@ This project is licensed under the [MIT License](LICENSE).
 
 ## 🙋‍♂️ Author
 
-Made with 💡 by **Akshwin T**  
-🔗 [LinkedIn](https://www.linkedin.com/in/akshwin/) | [GitHub](https://github.com/akshwin)
+Made with 💡 by **Akshwin T**
+📧 [akshwint.2003@gmail.com](mailto:akshwint.2003@gmail.com)
+🔗 [LinkedIn](https://www.linkedin.com/in/akshwin/)
+🔗 [GitHub](https://github.com/akshwin)
+
+
+---
