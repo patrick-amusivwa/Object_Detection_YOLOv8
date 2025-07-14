@@ -112,9 +112,9 @@ if uploaded_file:
         # ---- Display Images Side by Side ---- #
         col1, col2 = st.columns(2)
         with col1:
-            st.image(original_img, caption="📷 Original Image", use_column_width=True)
+            st.image(original_img, caption="📷 Original Image", use_container_width=True)
         with col2:
-            st.image(mask_img, caption="🛣️ Predicted Lane", use_column_width=True)
+            st.image(mask_img, caption="🛣️ Predicted Lane", use_container_width=True)
 
         st.markdown("---")
         st.success("✅ Lane detection completed successfully!")
