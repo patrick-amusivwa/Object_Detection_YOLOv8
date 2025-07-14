@@ -15,6 +15,8 @@ st.set_page_config(page_title="🛣️ Lane Detection", layout="centered")
 IMG_HEIGHT, IMG_WIDTH = 256, 256
 UPLOADED_FOLDER = 'static/uploaded'
 PREDICTED_FOLDER = 'static/predicted'
+SAMPLE_IMAGE_PATH = 'upload_image/road.webp'
+
 os.makedirs(UPLOADED_FOLDER, exist_ok=True)
 os.makedirs(PREDICTED_FOLDER, exist_ok=True)
 
@@ -62,7 +64,7 @@ with st.sidebar:
 
     with st.expander("📌 How It Works"):
         st.markdown("""
-        1. Upload a road scene image (JPG or PNG).
+        1. Upload a road scene image (JPG or PNG), or use the sample image.
         2. The model processes the image to detect lane boundaries.
         3. You'll see the **original** and **predicted lane mask** side by side.
         """)
@@ -88,36 +90,53 @@ with st.sidebar:
 
 # ---- Main Title ---- #
 st.markdown("<h1 style='text-align: center; color: #2C3E50;'>🛣️ Lane Detection Using Cascaded UNET Architecture</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center;'>Upload a road image to visualize the lane mask using deep learning.</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center;'>Upload a road image or use a sample to visualize the lane mask using deep learning.</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# ---- File Upload ---- #
+# ---- Upload Section ---- #
 uploaded_file = st.file_uploader("📤 Upload a Road Image", type=["jpg", "jpeg", "png"])
+use_sample_image = st.button("🖼️ Use Sample Road Image")
 
-if uploaded_file:
+# ---- Determine Source ---- #
+image_source_path = None
+source_label = ""
+
+if uploaded_file and not use_sample_image:
+    # Save uploaded image
+    temp_filename = f"{uuid.uuid4().hex}.png"
+    image_source_path = os.path.join(UPLOADED_FOLDER, temp_filename)
+    with open(image_source_path, "wb") as f:
+        f.write(uploaded_file.read())
+    source_label = "📷 Uploaded Image"
+
+elif use_sample_image and not uploaded_file:
+    image_source_path = SAMPLE_IMAGE_PATH
+    source_label = "🖼️ Sample Road Image"
+
+elif uploaded_file and use_sample_image:
+    st.warning("⚠️ Please either upload an image or click the sample button — not both.")
+elif not uploaded_file and not use_sample_image:
+    st.info("📥 Upload an image or click the 'Use Sample Road Image' button to begin.")
+
+# ---- Run Prediction if an image is available ---- #
+if image_source_path and os.path.exists(image_source_path):
     try:
-        # Save uploaded file to 'uploaded' folder
-        temp_filename = f"{uuid.uuid4().hex}.png"
-        uploaded_img_path = os.path.join(UPLOADED_FOLDER, temp_filename)
-        with open(uploaded_img_path, "wb") as f:
-            f.write(uploaded_file.read())
-
         with st.spinner("🔍 Detecting lanes..."):
-            predicted_mask_path = predict_mask(uploaded_img_path)
+            predicted_mask_path = predict_mask(image_source_path)
 
-        # Resize both images for display
-        original_img = Image.open(uploaded_img_path).resize((IMG_WIDTH, IMG_HEIGHT))
+        # Resize for display
+        original_img = Image.open(image_source_path).resize((IMG_WIDTH, IMG_HEIGHT))
         mask_img = Image.open(predicted_mask_path).resize((IMG_WIDTH, IMG_HEIGHT))
 
-        # ---- Display Images Side by Side ---- #
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(original_img, caption="📷 Original Image", use_container_width=True)
+        # Centered side-by-side columns (left and right with spacing)
+        col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
         with col2:
-            st.image(mask_img, caption="🛣️ Predicted Lane", use_container_width=True)
+            st.image(original_img, caption=source_label)
+        with col3:
+            st.image(mask_img, caption="🛣️ Predicted Lane")
 
         st.markdown("---")
         st.success("✅ Lane detection completed successfully!")
 
     except Exception as e:
-        st.error(f"⚠️ An error occurred: {str(e)}")
+        st.error(f"⚠️ An error occurred during prediction:\n\n{str(e)}")
