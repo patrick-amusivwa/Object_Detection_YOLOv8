@@ -9,7 +9,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ---- Page Config ---- #
-st.set_page_config(page_title="🛣️ Lane Detection", layout="centered")
+st.set_page_config(page_title="Lane Detection UNET ", layout="centered",page_icon="🛣️")
 
 # ---- Constants ---- #
 IMG_HEIGHT, IMG_WIDTH = 256, 256
