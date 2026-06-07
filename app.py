@@ -37,6 +37,49 @@ def load_model():
 
 model = load_model()
 
+
+# ---- YOLO Model ---- #
+
+DETECT_CLASSES = {
+    0: "person",
+    1: "bicycle",
+    2: "car",
+    3: "motorcycle",
+    5: "bus",
+    7: "truck",
+}
+
+
+@st.cache_resource
+def load_yolo():
+    from ultralytics import YOLO
+
+    return YOLO("yolov8n.pt")  # auto-downloads ~6 MB on first run
+
+
+def draw_detections(bgr_frame, conf_threshold=0.40):
+    """Draw YOLO bounding boxes for vehicles/persons on a BGR frame."""
+    yolo = load_yolo()
+    results = yolo(bgr_frame, verbose=False, conf=conf_threshold)[0]
+    for box in results.boxes:
+        cls_id = int(box.cls[0])
+        if cls_id not in DETECT_CLASSES:
+            continue
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        label = f"{DETECT_CLASSES[cls_id]} {float(box.conf[0]):.2f}"
+        cv2.rectangle(bgr_frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+        cv2.putText(
+            bgr_frame,
+            label,
+            (x1, max(y1 - 8, 12)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 165, 255),
+            2,
+        )
+    return bgr_frame
+
+
 # ---- Core Prediction Helpers ---- #
 
 
@@ -151,6 +194,55 @@ def process_video(video_path, road_start_ratio=0.0, test_seconds=0):
     return out_path
 
 
+def process_video_advanced(video_path, road_start_ratio=0.0, test_seconds=0, conf=0.40):
+    """
+    Process video with lane mask (green) + YOLO object detection (orange boxes).
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError("Could not open video file.")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    max_frames = int(fps * test_seconds) if test_seconds > 0 else 0
+    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    out_path = os.path.join(PREDICTED_FOLDER, f"advanced_{uuid.uuid4().hex}.mp4")
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(out_path, fourcc, fps, (orig_w, orig_h))
+
+    progress_bar = st.progress(0, text="Processing frames (lanes + objects)…")
+    frame_idx = 0
+
+    while True:
+        ret, bgr_frame = cap.read()
+        if not ret:
+            break
+
+        # 1 — Lane mask overlay (green)
+        rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
+        mask = predict_mask_for_frame(rgb_frame, road_start_ratio=road_start_ratio)
+        result = overlay_mask_on_frame(bgr_frame, mask)
+
+        # 2 — YOLO object detection boxes (orange) on top
+        result = draw_detections(result, conf_threshold=conf)
+        writer.write(result)
+
+        frame_idx += 1
+        pct = frame_idx / total_frames if total_frames > 0 else 0
+        progress_bar.progress(
+            min(pct, 1.0), text=f"Processing frame {frame_idx} / {total_frames}"
+        )
+        if max_frames > 0 and frame_idx >= max_frames:
+            break
+
+    cap.release()
+    writer.release()
+    progress_bar.empty()
+    return out_path
+
+
 # ---- Sidebar ---- #
 with st.sidebar:
     st.title("🚗 Lane Detection App")
@@ -199,7 +291,7 @@ st.markdown(
 st.markdown("---")
 
 # ---- Tabs ---- #
-tab_image, tab_video = st.tabs(["🖼️ Image", "🎬 Video"])
+tab_image, tab_simple, tab_advanced = st.tabs(["🖼️ Image", "🛣️ Simple", "🚗 Advanced"])
 
 # ======================================================
 # IMAGE TAB
@@ -267,9 +359,9 @@ with tab_image:
             st.error(f"⚠️ Error during prediction:\n\n{str(e)}")
 
 # ======================================================
-# VIDEO TAB
+# SIMPLE TAB — Lane detection only
 # ======================================================
-with tab_video:
+with tab_simple:
     st.markdown(
         "Upload a **portrait or landscape** road video. Each frame is processed individually and the lane mask is overlaid at the original resolution."
     )
@@ -352,5 +444,100 @@ with tab_video:
 
             except Exception as e:
                 st.error(f"⚠️ Error during video processing:\n\n{str(e)}")
+    else:
+        st.info("📥 Upload a video file to begin.")
+
+# ======================================================
+# ADVANCED TAB — Lane detection + YOLO object detection
+# ======================================================
+with tab_advanced:
+    st.markdown(
+        "🚗 **Lane detection** (green mask) + **object detection** (orange boxes) combined.  "
+        "Detects cars, trucks, buses, motorcycles, bicycles and persons."
+    )
+
+    adv_video_file = st.file_uploader(
+        "📤 Upload a Road Video",
+        type=["mp4", "mov", "avi", "mkv"],
+        key="adv_vid_upload",
+    )
+
+    adv_test_seconds = st.slider(
+        "⏱️ Seconds to process (0 = full video)",
+        min_value=0,
+        max_value=60,
+        value=6,
+        step=1,
+        key="adv_test_seconds",
+    )
+
+    adv_road_start = (
+        st.slider(
+            "🔽 Skip top of frame (road start %)",
+            min_value=0,
+            max_value=70,
+            value=40,
+            step=5,
+            help="Skip sky/signs at the top so lane detection focuses on the road.",
+            key="adv_road_start",
+        )
+        / 100.0
+    )
+
+    adv_conf = (
+        st.slider(
+            "🎯 Object detection confidence threshold",
+            min_value=10,
+            max_value=90,
+            value=40,
+            step=5,
+            help="Lower = more detections (may include false positives). Higher = only confident detections.",
+            key="adv_conf",
+        )
+        / 100.0
+    )
+
+    if adv_video_file is not None:
+        adv_in_path = os.path.join(
+            UPLOADED_FOLDER, f"{uuid.uuid4().hex}_{adv_video_file.name}"
+        )
+        with open(adv_in_path, "wb") as f:
+            f.write(adv_video_file.read())
+
+        st.video(adv_in_path)
+        st.markdown(f"**Uploaded:** `{adv_video_file.name}`")
+
+        if st.button("🚀 Process Video (Advanced)"):
+            try:
+                with st.spinner("⚙️ Running lane + object detection on every frame…"):
+                    adv_out_path = process_video_advanced(
+                        adv_in_path,
+                        road_start_ratio=adv_road_start,
+                        test_seconds=adv_test_seconds,
+                        conf=adv_conf,
+                    )
+
+                st.success("✅ Advanced detection completed!")
+
+                cap_prev = cv2.VideoCapture(adv_out_path)
+                ret, prev_bgr = cap_prev.read()
+                cap_prev.release()
+                if ret:
+                    st.image(
+                        cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2RGB),
+                        caption="Preview — first processed frame (green = lanes, orange = objects)",
+                        use_container_width=True,
+                    )
+
+                with open(adv_out_path, "rb") as vf:
+                    st.download_button(
+                        label="⬇️ Download Advanced Video",
+                        data=vf,
+                        file_name="advanced_detection_output.mp4",
+                        mime="video/mp4",
+                    )
+
+            except Exception as e:
+                st.error(f"⚠️ Error during advanced processing:\n\n{str(e)}")
     else:
         st.info("📥 Upload a video file to begin.")
