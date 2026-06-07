@@ -4,4 +4,5 @@ matplotlib
 keras
 tensorflow
 Pillow
+opencv-python
 ipython
