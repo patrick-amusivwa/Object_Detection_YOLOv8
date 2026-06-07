@@ -105,7 +105,7 @@ def predict_image(image_path, road_start_ratio=0.0):
 # ---- Video Processing ---- #
 
 
-def process_video(video_path, road_start_ratio=0.0, max_frames=0):
+def process_video(video_path, road_start_ratio=0.0, test_seconds=0):
     """
     Process a video file frame by frame. Returns path to output MP4 with
     lane mask overlaid at the original video resolution (portrait-safe).
@@ -116,6 +116,7 @@ def process_video(video_path, road_start_ratio=0.0, max_frames=0):
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    max_frames = int(fps * test_seconds) if test_seconds > 0 else 0
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -277,14 +278,14 @@ with tab_video:
         "📤 Upload a Road Video", type=["mp4", "mov", "avi", "mkv"], key="vid_upload"
     )
 
-    max_frames = st.slider(
-        "🎞️ Max frames to process (0 = full video)",
+    test_seconds = st.slider(
+        "⏱️ Seconds to process (0 = full video)",
         min_value=0,
-        max_value=120,
-        value=30,
-        step=10,
-        help="Set to 30-60 to do a quick test. Set to 0 to process the entire video.",
-        key="max_frames",
+        max_value=60,
+        value=6,
+        step=1,
+        help="6 s is enough to verify detection is working. Set to 0 to process the whole video.",
+        key="test_seconds",
     )
 
     vid_road_start = (
@@ -323,7 +324,7 @@ with tab_video:
                     out_video_path = process_video(
                         vid_in_path,
                         road_start_ratio=vid_road_start,
-                        max_frames=max_frames,
+                        test_seconds=test_seconds,
                     )
 
                 st.success("✅ Video processed successfully!")
