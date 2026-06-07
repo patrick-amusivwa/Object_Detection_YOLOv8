@@ -176,6 +176,15 @@ def predict_image(image_path, road_start_ratio=0.0):
     return img_pil, Image.fromarray(mask, mode="L")
 
 
+def _should_skip(frame_idx, frame_skip):
+    """Return True if this frame should reuse the last mask instead of inferring."""
+    if frame_skip <= 1:
+        return False
+    if frame_skip == 1.5:
+        return frame_idx % 3 == 2  # skip 1 in 3 → 1.5× speedup
+    return frame_idx % int(frame_skip) != 0
+
+
 def _open_writer(video_path, suffix):
     """Open VideoCapture + VideoWriter pair, return (cap, writer, meta)."""
     cap = cv2.VideoCapture(video_path)
@@ -218,7 +227,7 @@ def process_video(video_path, road_start_ratio=0.0, test_seconds=0, frame_skip=1
         if not ret:
             break
 
-        if frame_skip > 1 and frame_idx % frame_skip != 0:
+        if _should_skip(frame_idx, frame_skip):
             # reuse last known mask — no inference needed
             writer.write(overlay_mask_on_frame(bgr, last_mask))
         else:
@@ -276,7 +285,7 @@ def process_video_advanced(
         if not ret:
             break
 
-        if frame_skip > 1 and frame_idx % frame_skip != 0:
+        if _should_skip(frame_idx, frame_skip):
             result = overlay_mask_on_frame(bgr, last_mask)
             result = draw_detections(result, conf)
             writer.write(result)
@@ -374,6 +383,11 @@ st.markdown(
     "Lane segmentation and object detection for road videos — portrait & landscape."
 )
 st.divider()
+
+# ---- Session state init ---- #
+for _key in ("simple_out", "simple_name", "adv_out", "adv_name", "script_results"):
+    if _key not in st.session_state:
+        st.session_state[_key] = None
 
 # ---- Tabs ---- #
 tab_image, tab_simple, tab_advanced, tab_script = st.tabs(
@@ -488,18 +502,24 @@ with tab_simple:
     with c3:
         vid_frame_skip = st.select_slider(
             "Speed",
-            options=[1, 2, 3],
+            options=[1, 1.5, 2, 3],
             value=1,
             format_func=lambda x: {
                 1: "Quality (1×)",
+                1.5: "Smooth (1.5×)",
                 2: "Fast (2×)",
                 3: "Fastest (3×)",
             }[x],
-            help="Infer every Nth frame, reuse last mask for skipped frames. 2× roughly halves processing time.",
+            help="Reuse last mask for skipped frames. 1.5× skips 1 in 3 frames.",
             key="vid_frame_skip",
         )
 
     if video_file is not None:
+        # Clear old result if a new file is uploaded
+        if st.session_state.simple_name != video_file.name:
+            st.session_state.simple_out = None
+            st.session_state.simple_name = video_file.name
+
         vid_in_path = os.path.join(
             UPLOADED_FOLDER, f"{uuid.uuid4().hex}_{video_file.name}"
         )
@@ -516,24 +536,30 @@ with tab_simple:
                     test_seconds=test_seconds,
                     frame_skip=vid_frame_skip,
                 )
-                st.success("Done.")
-
-                cap_p = cv2.VideoCapture(out_path)
-                ret, frame = cap_p.read()
-                cap_p.release()
-                if ret:
-                    st.image(
-                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                        caption="Preview — first frame",
-                        use_container_width=True,
-                    )
-
-                with open(out_path, "rb") as f:
-                    st.download_button(
-                        "⬇  Download video", f, "lane_output.mp4", "video/mp4"
-                    )
+                st.session_state.simple_out = out_path
+                st.success("Done — download ready below.")
             except Exception as e:
                 st.error(f"Error: {e}")
+
+        # Download section — persists across reruns via session state
+        if st.session_state.simple_out and os.path.exists(st.session_state.simple_out):
+            cap_p = cv2.VideoCapture(st.session_state.simple_out)
+            ret, frame = cap_p.read()
+            cap_p.release()
+            if ret:
+                st.image(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    caption="Preview — first frame",
+                    use_container_width=True,
+                )
+            with open(st.session_state.simple_out, "rb") as f:
+                st.download_button(
+                    "⬇  Download video",
+                    f,
+                    "lane_output.mp4",
+                    "video/mp4",
+                    key="dl_simple",
+                )
     else:
         st.info("Upload a video to get started.")
 
@@ -597,18 +623,24 @@ with tab_advanced:
     with c4:
         adv_frame_skip = st.select_slider(
             "Speed",
-            options=[1, 2, 3],
+            options=[1, 1.5, 2, 3],
             value=1,
             format_func=lambda x: {
                 1: "Quality (1×)",
+                1.5: "Smooth (1.5×)",
                 2: "Fast (2×)",
                 3: "Fastest (3×)",
             }[x],
-            help="Infer every Nth frame, reuse last mask for skipped frames.",
+            help="Reuse last mask for skipped frames. 1.5× skips 1 in 3 frames.",
             key="adv_frame_skip",
         )
 
     if adv_video_file is not None:
+        # Clear old result if a new file is uploaded
+        if st.session_state.adv_name != adv_video_file.name:
+            st.session_state.adv_out = None
+            st.session_state.adv_name = adv_video_file.name
+
         adv_in_path = os.path.join(
             UPLOADED_FOLDER, f"{uuid.uuid4().hex}_{adv_video_file.name}"
         )
@@ -626,24 +658,30 @@ with tab_advanced:
                     conf=adv_conf,
                     frame_skip=adv_frame_skip,
                 )
-                st.success("Done.")
-
-                cap_p = cv2.VideoCapture(adv_out)
-                ret, frame = cap_p.read()
-                cap_p.release()
-                if ret:
-                    st.image(
-                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
-                        caption="Preview — first frame (green = lanes · orange = objects)",
-                        use_container_width=True,
-                    )
-
-                with open(adv_out, "rb") as f:
-                    st.download_button(
-                        "⬇  Download video", f, "advanced_output.mp4", "video/mp4"
-                    )
+                st.session_state.adv_out = adv_out
+                st.success("Done — download ready below.")
             except Exception as e:
                 st.error(f"Error: {e}")
+
+        # Download section — persists across reruns via session state
+        if st.session_state.adv_out and os.path.exists(st.session_state.adv_out):
+            cap_p = cv2.VideoCapture(st.session_state.adv_out)
+            ret, frame = cap_p.read()
+            cap_p.release()
+            if ret:
+                st.image(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                    caption="Preview — first frame (green = lanes · orange = objects)",
+                    use_container_width=True,
+                )
+            with open(st.session_state.adv_out, "rb") as f:
+                st.download_button(
+                    "⬇  Download video",
+                    f,
+                    "advanced_output.mp4",
+                    "video/mp4",
+                    key="dl_adv",
+                )
     else:
         st.info("Upload a video to get started.")
 
@@ -699,14 +737,15 @@ with tab_script:
     with sc3:
         script_frame_skip = st.select_slider(
             "Speed",
-            options=[1, 2, 3],
+            options=[1, 1.5, 2, 3],
             value=2,
             format_func=lambda x: {
                 1: "Quality (1×)",
+                1.5: "Smooth (1.5×)",
                 2: "Fast (2×)",
                 3: "Fastest (3×)",
             }[x],
-            help="Default is Fast (2×) for batch jobs — halves total processing time.",
+            help="Default is Fast (2×) for batch jobs. 1.5× skips 1 in 3 frames.",
             key="script_frame_skip",
         )
 
@@ -727,7 +766,6 @@ with tab_script:
 
         if st.button("▶  Run Personal Script", key="run_script"):
             results = []
-
             simple_count = 0
             advanced_count = 0
 
@@ -770,10 +808,15 @@ with tab_script:
                     st.error(f"✗ Failed: {e}")
                     results.append((video_label, None, mode))
 
+            # Save to session state so downloads survive reruns
+            st.session_state.script_results = results
+
+        # Downloads — always rendered from session state
+        if st.session_state.script_results:
             st.divider()
             st.markdown("### ⬇  Downloads")
-            for video_label, out_path, mode in results:
-                if out_path is None:
+            for video_label, out_path, mode in st.session_state.script_results:
+                if out_path is None or not os.path.exists(out_path):
                     st.markdown(f"❌ `{video_label}` — processing failed")
                     continue
                 badge = (
@@ -782,7 +825,6 @@ with tab_script:
                     else '<span class="badge badge-orange">● Advanced</span>'
                 )
                 st.markdown(f"**{video_label}** &nbsp; {badge}", unsafe_allow_html=True)
-                # e.g. simple_video_1.mp4 / advanced_video_1.mp4
                 out_filename = video_label.lower().replace(" ", "_") + ".mp4"
                 with open(out_path, "rb") as f_:
                     st.download_button(
