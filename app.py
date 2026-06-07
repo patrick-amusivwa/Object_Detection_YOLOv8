@@ -281,8 +281,8 @@ st.markdown(
 st.divider()
 
 # ---- Tabs ---- #
-tab_image, tab_simple, tab_advanced = st.tabs(
-    ["🖼️  Image", "🛣️  Lane Detection", "🚗  Advanced"]
+tab_image, tab_simple, tab_advanced, tab_script = st.tabs(
+    ["🖼️  Image", "🛣️  Lane Detection", "🚗  Advanced", "📋  Personal Script"]
 )
 
 
@@ -523,3 +523,130 @@ with tab_advanced:
                 st.error(f"Error: {e}")
     else:
         st.info("Upload a video to get started.")
+
+
+# ══════════════════════════════════════════════════════
+# PERSONAL SCRIPT TAB
+# ══════════════════════════════════════════════════════
+with tab_script:
+    st.markdown(
+        "Upload up to **10 videos**. "
+        '<span class="badge badge-green">● Videos 1–5</span> get lane detection only. '
+        '<span class="badge badge-orange">● Videos 6–10</span> get lane + object detection. '
+        "All videos are processed in full — no time limit.",
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+
+    script_files = st.file_uploader(
+        "Upload videos",
+        type=["mp4", "mov", "avi", "mkv"],
+        accept_multiple_files=True,
+        key="script_upload",
+        label_visibility="collapsed",
+    )
+
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        script_road_start = (
+            st.slider(
+                "Skip top %",
+                0,
+                70,
+                40,
+                5,
+                help="Skip sky/signs at the top of portrait frames.",
+                key="script_road_start",
+            )
+            / 100.0
+        )
+    with sc2:
+        script_conf = (
+            st.slider(
+                "Detection confidence % — Advanced videos only",
+                10,
+                90,
+                40,
+                5,
+                help="Applies to videos 6–10 only.",
+                key="script_conf",
+            )
+            / 100.0
+        )
+
+    if script_files:
+        script_files = script_files[:10]
+        total = len(script_files)
+
+        st.markdown("**Queue**")
+        for i, f in enumerate(script_files):
+            badge = (
+                '<span class="badge badge-green">● Simple</span>'
+                if i < 5
+                else '<span class="badge badge-orange">● Advanced</span>'
+            )
+            st.markdown(f"{i + 1}. `{f.name}` &nbsp; {badge}", unsafe_allow_html=True)
+
+        st.markdown("")
+
+        if st.button("▶  Run Personal Script", key="run_script"):
+            results = []
+
+            for i, vid_file in enumerate(script_files):
+                mode = "simple" if i < 5 else "advanced"
+                st.markdown(
+                    f"**[{i + 1}/{total}] {vid_file.name}** —"
+                    f" {'Lane detection' if mode == 'simple' else 'Lane + Object detection'}"
+                )
+
+                in_path = os.path.join(
+                    UPLOADED_FOLDER, f"{uuid.uuid4().hex}_{vid_file.name}"
+                )
+                with open(in_path, "wb") as f_:
+                    f_.write(vid_file.read())
+
+                try:
+                    if mode == "simple":
+                        out_path = process_video(
+                            in_path,
+                            road_start_ratio=script_road_start,
+                            test_seconds=0,
+                        )
+                    else:
+                        out_path = process_video_advanced(
+                            in_path,
+                            road_start_ratio=script_road_start,
+                            test_seconds=0,
+                            conf=script_conf,
+                        )
+                    results.append((vid_file.name, out_path, mode))
+                    st.success("✓ Done")
+                except Exception as e:
+                    st.error(f"✗ Failed: {e}")
+                    results.append((vid_file.name, None, mode))
+
+            st.divider()
+            st.markdown("### ⬇  Downloads")
+            for name, out_path, mode in results:
+                if out_path is None:
+                    st.markdown(f"❌ `{name}` — processing failed")
+                    continue
+                badge = (
+                    '<span class="badge badge-green">● Simple</span>'
+                    if mode == "simple"
+                    else '<span class="badge badge-orange">● Advanced</span>'
+                )
+                st.markdown(f"`{name}` &nbsp; {badge}", unsafe_allow_html=True)
+                out_filename = f"{'lane' if mode == 'simple' else 'advanced'}_{name}"
+                with open(out_path, "rb") as f_:
+                    st.download_button(
+                        f"⬇  Download {name}",
+                        data=f_,
+                        file_name=out_filename,
+                        mime="video/mp4",
+                        key=f"dl_{out_path}",
+                    )
+    else:
+        st.info(
+            "Upload up to 10 videos. First 5 → lane detection, next 5 → lane + object detection."
+        )
