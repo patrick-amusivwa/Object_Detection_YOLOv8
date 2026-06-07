@@ -85,33 +85,82 @@ def draw_detections(bgr_frame, conf_threshold=0.40):
     return bgr_frame
 
 
+# ---- Inference constants ---- #
+INFERENCE_BATCH = 8  # frames per model.predict() call — amortises TF overhead
+
+
 # ---- Core Prediction Helpers ---- #
 
 
-def predict_mask_for_frame(rgb_array, road_start_ratio=0.0):
-    """
-    Run lane segmentation on an RGB frame.
-    road_start_ratio skips the top portion (sky/signs) before inference
-    and maps the predicted mask back to the full original frame size.
-    """
-    orig_h, orig_w = rgb_array.shape[:2]
-    crop_top = int(orig_h * road_start_ratio)
+def _preprocess_roi(rgb_array, crop_top):
+    """Crop + resize one RGB frame to model input size."""
     roi = rgb_array[crop_top:, :, :]
-    roi_h, roi_w = roi.shape[:2]
-
-    img_resized = cv2.resize(
-        roi, (MODEL_INPUT_W, MODEL_INPUT_H), interpolation=cv2.INTER_LINEAR
+    return (
+        cv2.resize(
+            roi, (MODEL_INPUT_W, MODEL_INPUT_H), interpolation=cv2.INTER_LINEAR
+        ).astype(np.float32)
+        / 255.0
     )
-    tensor = np.expand_dims(img_resized.astype(np.float32) / 255.0, axis=0)
 
-    pred = model.predict(tensor, verbose=0)[0]
-    mask_256 = (pred > 0.5).astype(np.uint8) * 255
-    mask_256 = np.squeeze(mask_256)
 
+def _pred_to_mask(pred, orig_h, orig_w, crop_top):
+    """Convert a single model prediction to a full-frame binary mask."""
+    mask_256 = np.squeeze((pred > 0.5).astype(np.uint8) * 255)
+    roi_h, roi_w = orig_h - crop_top, orig_w
     mask_roi = cv2.resize(mask_256, (roi_w, roi_h), interpolation=cv2.INTER_NEAREST)
-    full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-    full_mask[crop_top:, :] = mask_roi
-    return full_mask
+    full = np.zeros((orig_h, orig_w), dtype=np.uint8)
+    full[crop_top:, :] = mask_roi
+    return full
+
+
+def predict_masks_batch(rgb_list, road_start_ratio=0.0):
+    """
+    Run lane segmentation on a list of RGB frames in ONE batched predict() call.
+    Returns a list of full-frame binary masks.
+    """
+    if not rgb_list:
+        return []
+    orig_h, orig_w = rgb_list[0].shape[:2]
+    crop_top = int(orig_h * road_start_ratio)
+    batch = np.stack([_preprocess_roi(f, crop_top) for f in rgb_list])  # (N,256,256,3)
+    preds = model.predict(batch, verbose=0)  # (N,256,256,1)
+    return [_pred_to_mask(p, orig_h, orig_w, crop_top) for p in preds]
+
+
+# kept for image-tab (single-frame) use
+def predict_mask_for_frame(rgb_array, road_start_ratio=0.0):
+    return predict_masks_batch([rgb_array], road_start_ratio)[0]
+
+
+def draw_detections_batch(bgr_frames, conf_threshold=0.40):
+    """Run YOLO on a list of BGR frames in one batched call."""
+    yolo = load_yolo()
+    results = yolo(bgr_frames, verbose=False, conf=conf_threshold)
+    out = []
+    for bgr, res in zip(bgr_frames, results):
+        for box in res.boxes:
+            cls_id = int(box.cls[0])
+            if cls_id not in DETECT_CLASSES:
+                continue
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            label = f"{DETECT_CLASSES[cls_id]} {float(box.conf[0]):.2f}"
+            cv2.rectangle(bgr, (x1, y1), (x2, y2), (0, 165, 255), 2)
+            cv2.putText(
+                bgr,
+                label,
+                (x1, max(y1 - 8, 12)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 165, 255),
+                2,
+            )
+        out.append(bgr)
+    return out
+
+
+# kept for single-frame use
+def draw_detections(bgr_frame, conf_threshold=0.40):
+    return draw_detections_batch([bgr_frame], conf_threshold)[0]
 
 
 def overlay_mask_on_frame(bgr_frame, mask, color=(0, 255, 80), alpha=0.45):
@@ -127,39 +176,68 @@ def predict_image(image_path, road_start_ratio=0.0):
     return img_pil, Image.fromarray(mask, mode="L")
 
 
-def process_video(video_path, road_start_ratio=0.0, test_seconds=0):
+def _open_writer(video_path, suffix):
+    """Open VideoCapture + VideoWriter pair, return (cap, writer, meta)."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError("Could not open video file.")
-
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    max_frames = int(fps * test_seconds) if test_seconds > 0 else 0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    out_path = os.path.join(PREDICTED_FOLDER, f"lane_{uuid.uuid4().hex}.mp4")
+    out_path = os.path.join(PREDICTED_FOLDER, f"{suffix}_{uuid.uuid4().hex}.mp4")
     writer = cv2.VideoWriter(
         out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (orig_w, orig_h)
     )
+    return cap, writer, out_path, fps, total, orig_w, orig_h
+
+
+def process_video(video_path, road_start_ratio=0.0, test_seconds=0, frame_skip=1):
+    """
+    Lane-only processing with batched inference and optional frame skipping.
+    frame_skip=1 → every frame, =2 → every other frame (reuse last mask), etc.
+    """
+    cap, writer, out_path, fps, total, orig_w, orig_h = _open_writer(video_path, "lane")
+    max_frames = int(fps * test_seconds) if test_seconds > 0 else 0
 
     bar = st.progress(0, text="Detecting lanes…")
     frame_idx = 0
+    last_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+
+    rgb_buf, bgr_buf = [], []
+
+    def flush_lane(rgb_b, bgr_b):
+        nonlocal last_mask
+        masks = predict_masks_batch(rgb_b, road_start_ratio)
+        for bgr_f, m in zip(bgr_b, masks):
+            last_mask = m
+            writer.write(overlay_mask_on_frame(bgr_f, m))
+
     while True:
         ret, bgr = cap.read()
         if not ret:
             break
-        mask = predict_mask_for_frame(
-            cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), road_start_ratio
-        )
-        writer.write(overlay_mask_on_frame(bgr, mask))
+
+        if frame_skip > 1 and frame_idx % frame_skip != 0:
+            # reuse last known mask — no inference needed
+            writer.write(overlay_mask_on_frame(bgr, last_mask))
+        else:
+            rgb_buf.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            bgr_buf.append(bgr)
+            if len(rgb_buf) == INFERENCE_BATCH:
+                flush_lane(rgb_buf, bgr_buf)
+                rgb_buf, bgr_buf = [], []
+
         frame_idx += 1
         bar.progress(
-            min(frame_idx / total_frames, 1.0) if total_frames else 0,
-            text=f"Frame {frame_idx} / {total_frames}",
+            min(frame_idx / total, 1.0) if total else 0,
+            text=f"Frame {frame_idx} / {total}",
         )
         if max_frames and frame_idx >= max_frames:
             break
+
+    if rgb_buf:  # flush remainder
+        flush_lane(rgb_buf, bgr_buf)
 
     cap.release()
     writer.release()
@@ -167,41 +245,58 @@ def process_video(video_path, road_start_ratio=0.0, test_seconds=0):
     return out_path
 
 
-def process_video_advanced(video_path, road_start_ratio=0.0, test_seconds=0, conf=0.40):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError("Could not open video file.")
-
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    max_frames = int(fps * test_seconds) if test_seconds > 0 else 0
-    orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-    out_path = os.path.join(PREDICTED_FOLDER, f"advanced_{uuid.uuid4().hex}.mp4")
-    writer = cv2.VideoWriter(
-        out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (orig_w, orig_h)
+def process_video_advanced(
+    video_path, road_start_ratio=0.0, test_seconds=0, conf=0.40, frame_skip=1
+):
+    """
+    Lane + YOLO processing with batched inference and optional frame skipping.
+    """
+    cap, writer, out_path, fps, total, orig_w, orig_h = _open_writer(
+        video_path, "advanced"
     )
+    max_frames = int(fps * test_seconds) if test_seconds > 0 else 0
 
     bar = st.progress(0, text="Running lane + object detection…")
     frame_idx = 0
+    last_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+
+    rgb_buf, bgr_buf = [], []
+
+    def flush_advanced(rgb_b, bgr_b):
+        nonlocal last_mask
+        masks = predict_masks_batch(rgb_b, road_start_ratio)
+        frames = [overlay_mask_on_frame(b, m) for b, m in zip(bgr_b, masks)]
+        frames = draw_detections_batch(frames, conf)
+        for bgr_f, m, result in zip(bgr_b, masks, frames):
+            last_mask = m
+            writer.write(result)
+
     while True:
         ret, bgr = cap.read()
         if not ret:
             break
-        mask = predict_mask_for_frame(
-            cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), road_start_ratio
-        )
-        result = overlay_mask_on_frame(bgr, mask)
-        result = draw_detections(result, conf_threshold=conf)
-        writer.write(result)
+
+        if frame_skip > 1 and frame_idx % frame_skip != 0:
+            result = overlay_mask_on_frame(bgr, last_mask)
+            result = draw_detections(result, conf)
+            writer.write(result)
+        else:
+            rgb_buf.append(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+            bgr_buf.append(bgr)
+            if len(rgb_buf) == INFERENCE_BATCH:
+                flush_advanced(rgb_buf, bgr_buf)
+                rgb_buf, bgr_buf = [], []
+
         frame_idx += 1
         bar.progress(
-            min(frame_idx / total_frames, 1.0) if total_frames else 0,
-            text=f"Frame {frame_idx} / {total_frames}",
+            min(frame_idx / total, 1.0) if total else 0,
+            text=f"Frame {frame_idx} / {total}",
         )
         if max_frames and frame_idx >= max_frames:
             break
+
+    if rgb_buf:
+        flush_advanced(rgb_buf, bgr_buf)
 
     cap.release()
     writer.release()
@@ -366,7 +461,7 @@ with tab_simple:
         label_visibility="collapsed",
     )
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         test_seconds = st.slider(
             "Seconds to process",
@@ -390,6 +485,19 @@ with tab_simple:
             )
             / 100.0
         )
+    with c3:
+        vid_frame_skip = st.select_slider(
+            "Speed",
+            options=[1, 2, 3],
+            value=1,
+            format_func=lambda x: {
+                1: "Quality (1×)",
+                2: "Fast (2×)",
+                3: "Fastest (3×)",
+            }[x],
+            help="Infer every Nth frame, reuse last mask for skipped frames. 2× roughly halves processing time.",
+            key="vid_frame_skip",
+        )
 
     if video_file is not None:
         vid_in_path = os.path.join(
@@ -406,6 +514,7 @@ with tab_simple:
                     vid_in_path,
                     road_start_ratio=vid_road_start,
                     test_seconds=test_seconds,
+                    frame_skip=vid_frame_skip,
                 )
                 st.success("Done.")
 
@@ -448,7 +557,7 @@ with tab_advanced:
         label_visibility="collapsed",
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         adv_test_seconds = st.slider(
             "Seconds to process",
@@ -485,6 +594,19 @@ with tab_advanced:
             )
             / 100.0
         )
+    with c4:
+        adv_frame_skip = st.select_slider(
+            "Speed",
+            options=[1, 2, 3],
+            value=1,
+            format_func=lambda x: {
+                1: "Quality (1×)",
+                2: "Fast (2×)",
+                3: "Fastest (3×)",
+            }[x],
+            help="Infer every Nth frame, reuse last mask for skipped frames.",
+            key="adv_frame_skip",
+        )
 
     if adv_video_file is not None:
         adv_in_path = os.path.join(
@@ -502,6 +624,7 @@ with tab_advanced:
                     road_start_ratio=adv_road_start,
                     test_seconds=adv_test_seconds,
                     conf=adv_conf,
+                    frame_skip=adv_frame_skip,
                 )
                 st.success("Done.")
 
@@ -546,7 +669,7 @@ with tab_script:
         label_visibility="collapsed",
     )
 
-    sc1, sc2 = st.columns(2)
+    sc1, sc2, sc3 = st.columns(3)
     with sc1:
         script_road_start = (
             st.slider(
@@ -563,7 +686,7 @@ with tab_script:
     with sc2:
         script_conf = (
             st.slider(
-                "Detection confidence % — Advanced videos only",
+                "Detection confidence % — Advanced only",
                 10,
                 90,
                 40,
@@ -572,6 +695,19 @@ with tab_script:
                 key="script_conf",
             )
             / 100.0
+        )
+    with sc3:
+        script_frame_skip = st.select_slider(
+            "Speed",
+            options=[1, 2, 3],
+            value=2,
+            format_func=lambda x: {
+                1: "Quality (1×)",
+                2: "Fast (2×)",
+                3: "Fastest (3×)",
+            }[x],
+            help="Default is Fast (2×) for batch jobs — halves total processing time.",
+            key="script_frame_skip",
         )
 
     if script_files:
@@ -618,6 +754,7 @@ with tab_script:
                             in_path,
                             road_start_ratio=script_road_start,
                             test_seconds=0,
+                            frame_skip=script_frame_skip,
                         )
                     else:
                         out_path = process_video_advanced(
@@ -625,6 +762,7 @@ with tab_script:
                             road_start_ratio=script_road_start,
                             test_seconds=0,
                             conf=script_conf,
+                            frame_skip=script_frame_skip,
                         )
                     results.append((video_label, out_path, mode))
                     st.success("✓ Done")
