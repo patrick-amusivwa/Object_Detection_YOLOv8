@@ -11,7 +11,12 @@ from PIL import Image
 matplotlib.use("Agg")
 
 # ---- Page Config ---- #
-st.set_page_config(page_title="Lane Detection UNET", layout="centered", page_icon="🛣️")
+st.set_page_config(
+    page_title="Road Vision AI",
+    layout="wide",
+    page_icon="🛣️",
+    initial_sidebar_state="expanded",
+)
 
 # ---- Constants ---- #
 MODEL_INPUT_H, MODEL_INPUT_W = 256, 256
@@ -54,7 +59,7 @@ DETECT_CLASSES = {
 def load_yolo():
     from ultralytics import YOLO
 
-    return YOLO("yolov8n.pt")  # auto-downloads ~6 MB on first run
+    return YOLO("yolov8n.pt")
 
 
 def draw_detections(bgr_frame, conf_threshold=0.40):
@@ -85,21 +90,15 @@ def draw_detections(bgr_frame, conf_threshold=0.40):
 
 def predict_mask_for_frame(rgb_array, road_start_ratio=0.0):
     """
-    Given an RGB numpy array of any size, run the model and return a
-    grayscale mask (0/255) at the original frame dimensions.
-
-    road_start_ratio: fraction of frame height to skip from the top before
-    running inference (e.g. 0.40 skips the top 40% sky/sign area).
-    The mask for that skipped region is always zero.
+    Run lane segmentation on an RGB frame.
+    road_start_ratio skips the top portion (sky/signs) before inference
+    and maps the predicted mask back to the full original frame size.
     """
     orig_h, orig_w = rgb_array.shape[:2]
-
-    # Crop to the road region of interest
     crop_top = int(orig_h * road_start_ratio)
-    roi = rgb_array[crop_top:, :, :]  # bottom portion where road lives
+    roi = rgb_array[crop_top:, :, :]
     roi_h, roi_w = roi.shape[:2]
 
-    # Resize ROI to model input — model only sees the road area
     img_resized = cv2.resize(
         roi, (MODEL_INPUT_W, MODEL_INPUT_H), interpolation=cv2.INTER_LINEAR
     )
@@ -107,52 +106,28 @@ def predict_mask_for_frame(rgb_array, road_start_ratio=0.0):
 
     pred = model.predict(tensor, verbose=0)[0]
     mask_256 = (pred > 0.5).astype(np.uint8) * 255
-    mask_256 = np.squeeze(mask_256)  # (256, 256)
+    mask_256 = np.squeeze(mask_256)
 
-    # Resize mask back to the ROI dimensions
     mask_roi = cv2.resize(mask_256, (roi_w, roi_h), interpolation=cv2.INTER_NEAREST)
-
-    # Embed ROI mask into a blank full-frame mask
     full_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
     full_mask[crop_top:, :] = mask_roi
-    return full_mask  # shape (orig_h, orig_w)
+    return full_mask
 
 
 def overlay_mask_on_frame(bgr_frame, mask, color=(0, 255, 80), alpha=0.45):
-    """
-    Blend a coloured lane mask onto a BGR frame.
-    Returns a BGR frame at the same resolution.
-    """
     colored = np.zeros_like(bgr_frame)
     colored[mask > 0] = color
-    blended = cv2.addWeighted(bgr_frame, 1.0, colored, alpha, 0)
-    return blended
-
-
-# ---- Image Prediction ---- #
+    return cv2.addWeighted(bgr_frame, 1.0, colored, alpha, 0)
 
 
 def predict_image(image_path, road_start_ratio=0.0):
-    """
-    Load an image, predict the lane mask, and return:
-      - original PIL Image (original size)
-      - mask PIL Image (original size, greyscale)
-    """
     img_pil = Image.open(image_path).convert("RGB")
     rgb = np.array(img_pil)
     mask = predict_mask_for_frame(rgb, road_start_ratio=road_start_ratio)
-    mask_pil = Image.fromarray(mask, mode="L")
-    return img_pil, mask_pil
-
-
-# ---- Video Processing ---- #
+    return img_pil, Image.fromarray(mask, mode="L")
 
 
 def process_video(video_path, road_start_ratio=0.0, test_seconds=0):
-    """
-    Process a video file frame by frame. Returns path to output MP4 with
-    lane mask overlaid at the original video resolution (portrait-safe).
-    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError("Could not open video file.")
@@ -164,40 +139,35 @@ def process_video(video_path, road_start_ratio=0.0, test_seconds=0):
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     out_path = os.path.join(PREDICTED_FOLDER, f"lane_{uuid.uuid4().hex}.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(out_path, fourcc, fps, (orig_w, orig_h))
+    writer = cv2.VideoWriter(
+        out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (orig_w, orig_h)
+    )
 
-    progress_bar = st.progress(0, text="Processing frames…")
+    bar = st.progress(0, text="Detecting lanes…")
     frame_idx = 0
-
     while True:
-        ret, bgr_frame = cap.read()
+        ret, bgr = cap.read()
         if not ret:
             break
-
-        rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-        mask = predict_mask_for_frame(rgb_frame, road_start_ratio=road_start_ratio)
-        result = overlay_mask_on_frame(bgr_frame, mask)
-        writer.write(result)
-
-        frame_idx += 1
-        pct = frame_idx / total_frames if total_frames > 0 else 0
-        progress_bar.progress(
-            min(pct, 1.0), text=f"Processing frame {frame_idx} / {total_frames}"
+        mask = predict_mask_for_frame(
+            cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), road_start_ratio
         )
-        if max_frames > 0 and frame_idx >= max_frames:
+        writer.write(overlay_mask_on_frame(bgr, mask))
+        frame_idx += 1
+        bar.progress(
+            min(frame_idx / total_frames, 1.0) if total_frames else 0,
+            text=f"Frame {frame_idx} / {total_frames}",
+        )
+        if max_frames and frame_idx >= max_frames:
             break
 
     cap.release()
     writer.release()
-    progress_bar.empty()
+    bar.empty()
     return out_path
 
 
 def process_video_advanced(video_path, road_start_ratio=0.0, test_seconds=0, conf=0.40):
-    """
-    Process video with lane mask (green) + YOLO object detection (orange boxes).
-    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError("Could not open video file.")
@@ -209,111 +179,141 @@ def process_video_advanced(video_path, road_start_ratio=0.0, test_seconds=0, con
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     out_path = os.path.join(PREDICTED_FOLDER, f"advanced_{uuid.uuid4().hex}.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    writer = cv2.VideoWriter(out_path, fourcc, fps, (orig_w, orig_h))
+    writer = cv2.VideoWriter(
+        out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (orig_w, orig_h)
+    )
 
-    progress_bar = st.progress(0, text="Processing frames (lanes + objects)…")
+    bar = st.progress(0, text="Running lane + object detection…")
     frame_idx = 0
-
     while True:
-        ret, bgr_frame = cap.read()
+        ret, bgr = cap.read()
         if not ret:
             break
-
-        # 1 — Lane mask overlay (green)
-        rgb_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-        mask = predict_mask_for_frame(rgb_frame, road_start_ratio=road_start_ratio)
-        result = overlay_mask_on_frame(bgr_frame, mask)
-
-        # 2 — YOLO object detection boxes (orange) on top
+        mask = predict_mask_for_frame(
+            cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB), road_start_ratio
+        )
+        result = overlay_mask_on_frame(bgr, mask)
         result = draw_detections(result, conf_threshold=conf)
         writer.write(result)
-
         frame_idx += 1
-        pct = frame_idx / total_frames if total_frames > 0 else 0
-        progress_bar.progress(
-            min(pct, 1.0), text=f"Processing frame {frame_idx} / {total_frames}"
+        bar.progress(
+            min(frame_idx / total_frames, 1.0) if total_frames else 0,
+            text=f"Frame {frame_idx} / {total_frames}",
         )
-        if max_frames > 0 and frame_idx >= max_frames:
+        if max_frames and frame_idx >= max_frames:
             break
 
     cap.release()
     writer.release()
-    progress_bar.empty()
+    bar.empty()
     return out_path
+
+
+# ══════════════════════════════════════════════════════
+# UI
+# ══════════════════════════════════════════════════════
+
+# ---- Global CSS ---- #
+st.markdown(
+    """
+<style>
+/* Hide default Streamlit chrome */
+#MainMenu, footer, header {visibility: hidden;}
+
+/* Tighter top padding */
+.block-container {padding-top: 1.5rem;}
+
+/* Tab font size */
+.stTabs [data-baseweb="tab"] {font-size: 0.95rem; font-weight: 600; padding: 0.5rem 1.2rem;}
+
+/* Subtle card containers */
+.card {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+}
+
+/* Legend badges */
+.badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-right: 6px;
+}
+.badge-green  { background: rgba(0,255,80,0.18);  color: #00ff50; border: 1px solid #00ff50; }
+.badge-orange { background: rgba(255,165,0,0.18); color: #ffa500; border: 1px solid #ffa500; }
+</style>
+""",
+    unsafe_allow_html=True,
+)
 
 
 # ---- Sidebar ---- #
 with st.sidebar:
-    st.title("🚗 Lane Detection App")
-    st.markdown("""
-    Deep learning-based lane detection using a custom **Cascaded U-Net** model.
-    Upload a road image **or portrait/landscape video** to see predicted lane markings.
-    """)
+    st.markdown("## 🛣️ Road Vision AI")
+    st.markdown("Cascaded U-Net lane segmentation + YOLOv8 object detection.")
+    st.divider()
 
-    with st.expander("📌 How It Works"):
-        st.markdown("""
-        1. Choose the **Image** or **Video** tab.
-        2. Upload your file (or use the sample image).
-        3. The model detects lane boundaries on each frame.
-        4. Results are shown with the mask overlaid at the **original resolution** — portrait videos are fully supported.
-        """)
+    st.markdown("**Detection legend**")
+    st.markdown(
+        '<span class="badge badge-green">● Lanes</span>'
+        '<span class="badge badge-orange">● Objects</span>',
+        unsafe_allow_html=True,
+    )
+    st.divider()
 
-    with st.expander("🧠 Technical Overview"):
-        st.markdown("""
-        - **Model input**: 256 × 256 px (internal resize only)
-        - **Output**: mask scaled back to original frame size
-        - **Model**: Cascaded U-Net (binary segmentation)
-        - **Video**: frame-by-frame inference, original resolution preserved
-        """)
+    st.markdown("**Models**")
+    st.markdown("- Lane: Cascaded U-Net (custom trained)\n- Objects: YOLOv8n (COCO)")
+    st.divider()
 
-    with st.expander("✅ Features"):
-        st.markdown("""
-        - Portrait & landscape video support
-        - Aspect-ratio-correct mask overlay
-        - Downloadable processed video
-        - Fast and interactive interface
-        """)
+    st.caption("Built by Akshwin T · akshwint.2003@gmail.com")
 
-    st.markdown("---")
-    st.markdown("👨‍💻 **Created by Akshwin T**")
-    st.markdown("📧 akshwint.2003@gmail.com")
 
-# ---- Main Title ---- #
+# ---- Header ---- #
+st.markdown("## 🛣️ Road Vision AI")
 st.markdown(
-    "<h1 style='text-align:center;color:#2C3E50;'>🛣️ Lane Detection — Cascaded UNET</h1>",
-    unsafe_allow_html=True,
+    "Lane segmentation and object detection for road videos — portrait & landscape."
 )
-st.markdown(
-    "<p style='text-align:center;'>Upload a road image or video (portrait/landscape) to visualise lane masks.</p>",
-    unsafe_allow_html=True,
-)
-st.markdown("---")
+st.divider()
 
 # ---- Tabs ---- #
-tab_image, tab_simple, tab_advanced = st.tabs(["🖼️ Image", "🛣️ Simple", "🚗 Advanced"])
+tab_image, tab_simple, tab_advanced = st.tabs(
+    ["🖼️  Image", "🛣️  Lane Detection", "🚗  Advanced"]
+)
 
-# ======================================================
+
+# ══════════════════════════════════════════════════════
 # IMAGE TAB
-# ======================================================
+# ══════════════════════════════════════════════════════
 with tab_image:
-    uploaded_file = st.file_uploader(
-        "📤 Upload a Road Image", type=["jpg", "jpeg", "png", "webp"], key="img_upload"
-    )
-    use_sample = st.button("🖼️ Use Sample Road Image")
+    col_upload, col_controls = st.columns([3, 1])
 
-    img_road_start = (
-        st.slider(
-            "🔽 Skip top of frame (road start %)",
-            min_value=0,
-            max_value=70,
-            value=0,
-            step=5,
-            help="For portrait images with sky/signs at the top, slide this up so the model focuses only on the road area.",
-            key="img_road_start",
+    with col_upload:
+        uploaded_file = st.file_uploader(
+            "Upload a road image",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="img_upload",
+            label_visibility="collapsed",
         )
-        / 100.0
-    )
+        use_sample = st.button("Use sample image", key="use_sample")
+
+    with col_controls:
+        img_road_start = (
+            st.slider(
+                "Skip top %",
+                0,
+                70,
+                0,
+                5,
+                help="Slide up for portrait images with sky at the top.",
+                key="img_road_start",
+            )
+            / 100.0
+        )
 
     image_source_path = None
     source_label = ""
@@ -323,84 +323,75 @@ with tab_image:
         image_source_path = os.path.join(UPLOADED_FOLDER, temp_name)
         with open(image_source_path, "wb") as f:
             f.write(uploaded_file.read())
-        source_label = "📷 Uploaded Image"
-
+        source_label = "Original"
     elif use_sample and not uploaded_file:
         image_source_path = SAMPLE_IMAGE_PATH
-        source_label = "🖼️ Sample Road Image"
-
+        source_label = "Sample"
     elif uploaded_file and use_sample:
-        st.warning(
-            "⚠️ Please either upload an image or click the sample button — not both."
-        )
-
-    elif not uploaded_file and not use_sample:
-        st.info("📥 Upload an image or click 'Use Sample Road Image' to begin.")
+        st.warning("Pick one — upload or sample, not both.")
+    else:
+        st.info("Upload an image or use the sample to get started.")
 
     if image_source_path and os.path.exists(image_source_path):
         try:
-            with st.spinner("🔍 Detecting lanes…"):
+            with st.spinner("Detecting lanes…"):
                 orig_pil, mask_pil = predict_image(
                     image_source_path, road_start_ratio=img_road_start
                 )
 
-            col1, col2, col3, col4 = st.columns([1, 2, 2, 1])
-            with col2:
+            c1, c2 = st.columns(2)
+            with c1:
                 st.image(orig_pil, caption=source_label, use_container_width=True)
-            with col3:
-                st.image(
-                    mask_pil, caption="🛣️ Predicted Lane Mask", use_container_width=True
-                )
-
-            st.markdown("---")
-            st.success("✅ Lane detection completed successfully!")
-
+            with c2:
+                st.image(mask_pil, caption="Lane mask", use_container_width=True)
+            st.success("Done.")
         except Exception as e:
-            st.error(f"⚠️ Error during prediction:\n\n{str(e)}")
+            st.error(f"Error: {e}")
 
-# ======================================================
+
+# ══════════════════════════════════════════════════════
 # SIMPLE TAB — Lane detection only
-# ======================================================
+# ══════════════════════════════════════════════════════
 with tab_simple:
     st.markdown(
-        "Upload a **portrait or landscape** road video. Each frame is processed individually and the lane mask is overlaid at the original resolution."
+        '<span class="badge badge-green">● Lane mask</span> overlaid on every frame at original resolution.',
+        unsafe_allow_html=True,
     )
+    st.markdown("")
 
     video_file = st.file_uploader(
-        "📤 Upload a Road Video", type=["mp4", "mov", "avi", "mkv"], key="vid_upload"
+        "Upload a road video",
+        type=["mp4", "mov", "avi", "mkv"],
+        key="vid_upload",
+        label_visibility="collapsed",
     )
 
-    test_seconds = st.slider(
-        "⏱️ Seconds to process (0 = full video)",
-        min_value=0,
-        max_value=60,
-        value=6,
-        step=1,
-        help="6 s is enough to verify detection is working. Set to 0 to process the whole video.",
-        key="test_seconds",
-    )
-
-    vid_road_start = (
-        st.slider(
-            "🔽 Skip top of frame (road start %)",
-            min_value=0,
-            max_value=70,
-            value=40,
-            step=5,
-            help="Portrait videos typically have sky/signs in the top ~40 %. Slide this to where the road surface begins so the model focuses there.",
-            key="vid_road_start",
+    c1, c2 = st.columns(2)
+    with c1:
+        test_seconds = st.slider(
+            "Seconds to process",
+            0,
+            60,
+            6,
+            1,
+            help="0 = full video. Use 6 s for a quick test.",
+            key="test_seconds",
         )
-        / 100.0
-    )
-
-    # Visual guide line
-    if video_file is not None and vid_road_start > 0:
-        st.caption(
-            f"📌 Model will ignore the top {int(vid_road_start * 100)} % of each frame and run inference on the road area below."
+    with c2:
+        vid_road_start = (
+            st.slider(
+                "Skip top %",
+                0,
+                70,
+                40,
+                5,
+                help="Skip sky/signs at top of portrait frames.",
+                key="vid_road_start",
+            )
+            / 100.0
         )
 
     if video_file is not None:
-        # Save upload to disk so OpenCV can read it
         vid_in_path = os.path.join(
             UPLOADED_FOLDER, f"{uuid.uuid4().hex}_{video_file.name}"
         )
@@ -408,94 +399,92 @@ with tab_simple:
             f.write(video_file.read())
 
         st.video(vid_in_path)
-        st.markdown(f"**Uploaded:** `{video_file.name}`")
 
-        if st.button("🚀 Process Video"):
+        if st.button("▶  Run Lane Detection", key="run_simple"):
             try:
-                with st.spinner("⚙️ Running lane detection on every frame…"):
-                    out_video_path = process_video(
-                        vid_in_path,
-                        road_start_ratio=vid_road_start,
-                        test_seconds=test_seconds,
-                    )
+                out_path = process_video(
+                    vid_in_path,
+                    road_start_ratio=vid_road_start,
+                    test_seconds=test_seconds,
+                )
+                st.success("Done.")
 
-                st.success("✅ Video processed successfully!")
-
-                # Preview first processed frame
-                cap_preview = cv2.VideoCapture(out_video_path)
-                ret, preview_bgr = cap_preview.read()
-                cap_preview.release()
+                cap_p = cv2.VideoCapture(out_path)
+                ret, frame = cap_p.read()
+                cap_p.release()
                 if ret:
-                    preview_rgb = cv2.cvtColor(preview_bgr, cv2.COLOR_BGR2RGB)
                     st.image(
-                        preview_rgb,
-                        caption="Preview — first processed frame",
+                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                        caption="Preview — first frame",
                         use_container_width=True,
                     )
 
-                # Download button
-                with open(out_video_path, "rb") as vf:
+                with open(out_path, "rb") as f:
                     st.download_button(
-                        label="⬇️ Download Processed Video",
-                        data=vf,
-                        file_name="lane_detection_output.mp4",
-                        mime="video/mp4",
+                        "⬇  Download video", f, "lane_output.mp4", "video/mp4"
                     )
-
             except Exception as e:
-                st.error(f"⚠️ Error during video processing:\n\n{str(e)}")
+                st.error(f"Error: {e}")
     else:
-        st.info("📥 Upload a video file to begin.")
+        st.info("Upload a video to get started.")
 
-# ======================================================
-# ADVANCED TAB — Lane detection + YOLO object detection
-# ======================================================
+
+# ══════════════════════════════════════════════════════
+# ADVANCED TAB — Lanes + YOLO
+# ══════════════════════════════════════════════════════
 with tab_advanced:
     st.markdown(
-        "🚗 **Lane detection** (green mask) + **object detection** (orange boxes) combined.  "
-        "Detects cars, trucks, buses, motorcycles, bicycles and persons."
+        '<span class="badge badge-green">● Lane mask</span>'
+        '<span class="badge badge-orange">● Vehicles &amp; persons</span>'
+        "&nbsp; Both overlaid on every frame.",
+        unsafe_allow_html=True,
     )
+    st.markdown("")
 
     adv_video_file = st.file_uploader(
-        "📤 Upload a Road Video",
+        "Upload a road video",
         type=["mp4", "mov", "avi", "mkv"],
         key="adv_vid_upload",
+        label_visibility="collapsed",
     )
 
-    adv_test_seconds = st.slider(
-        "⏱️ Seconds to process (0 = full video)",
-        min_value=0,
-        max_value=60,
-        value=6,
-        step=1,
-        key="adv_test_seconds",
-    )
-
-    adv_road_start = (
-        st.slider(
-            "🔽 Skip top of frame (road start %)",
-            min_value=0,
-            max_value=70,
-            value=40,
-            step=5,
-            help="Skip sky/signs at the top so lane detection focuses on the road.",
-            key="adv_road_start",
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        adv_test_seconds = st.slider(
+            "Seconds to process",
+            0,
+            60,
+            6,
+            1,
+            help="0 = full video.",
+            key="adv_test_seconds",
         )
-        / 100.0
-    )
-
-    adv_conf = (
-        st.slider(
-            "🎯 Object detection confidence threshold",
-            min_value=10,
-            max_value=90,
-            value=40,
-            step=5,
-            help="Lower = more detections (may include false positives). Higher = only confident detections.",
-            key="adv_conf",
+    with c2:
+        adv_road_start = (
+            st.slider(
+                "Skip top %",
+                0,
+                70,
+                40,
+                5,
+                help="Skip sky/signs at top of portrait frames.",
+                key="adv_road_start",
+            )
+            / 100.0
         )
-        / 100.0
-    )
+    with c3:
+        adv_conf = (
+            st.slider(
+                "Detection confidence %",
+                10,
+                90,
+                40,
+                5,
+                help="Higher = stricter, fewer false positives.",
+                key="adv_conf",
+            )
+            / 100.0
+        )
 
     if adv_video_file is not None:
         adv_in_path = os.path.join(
@@ -505,39 +494,32 @@ with tab_advanced:
             f.write(adv_video_file.read())
 
         st.video(adv_in_path)
-        st.markdown(f"**Uploaded:** `{adv_video_file.name}`")
 
-        if st.button("🚀 Process Video (Advanced)"):
+        if st.button("▶  Run Advanced Detection", key="run_advanced"):
             try:
-                with st.spinner("⚙️ Running lane + object detection on every frame…"):
-                    adv_out_path = process_video_advanced(
-                        adv_in_path,
-                        road_start_ratio=adv_road_start,
-                        test_seconds=adv_test_seconds,
-                        conf=adv_conf,
-                    )
+                adv_out = process_video_advanced(
+                    adv_in_path,
+                    road_start_ratio=adv_road_start,
+                    test_seconds=adv_test_seconds,
+                    conf=adv_conf,
+                )
+                st.success("Done.")
 
-                st.success("✅ Advanced detection completed!")
-
-                cap_prev = cv2.VideoCapture(adv_out_path)
-                ret, prev_bgr = cap_prev.read()
-                cap_prev.release()
+                cap_p = cv2.VideoCapture(adv_out)
+                ret, frame = cap_p.read()
+                cap_p.release()
                 if ret:
                     st.image(
-                        cv2.cvtColor(prev_bgr, cv2.COLOR_BGR2RGB),
-                        caption="Preview — first processed frame (green = lanes, orange = objects)",
+                        cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                        caption="Preview — first frame (green = lanes · orange = objects)",
                         use_container_width=True,
                     )
 
-                with open(adv_out_path, "rb") as vf:
+                with open(adv_out, "rb") as f:
                     st.download_button(
-                        label="⬇️ Download Advanced Video",
-                        data=vf,
-                        file_name="advanced_detection_output.mp4",
-                        mime="video/mp4",
+                        "⬇  Download video", f, "advanced_output.mp4", "video/mp4"
                     )
-
             except Exception as e:
-                st.error(f"⚠️ Error during advanced processing:\n\n{str(e)}")
+                st.error(f"Error: {e}")
     else:
-        st.info("📥 Upload a video file to begin.")
+        st.info("Upload a video to get started.")
