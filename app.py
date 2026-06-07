@@ -592,12 +592,19 @@ with tab_script:
         if st.button("▶  Run Personal Script", key="run_script"):
             results = []
 
+            simple_count = 0
+            advanced_count = 0
+
             for i, vid_file in enumerate(script_files):
                 mode = "simple" if i < 5 else "advanced"
-                st.markdown(
-                    f"**[{i + 1}/{total}] {vid_file.name}** —"
-                    f" {'Lane detection' if mode == 'simple' else 'Lane + Object detection'}"
-                )
+                if mode == "simple":
+                    simple_count += 1
+                    video_label = f"Simple Video {simple_count}"
+                else:
+                    advanced_count += 1
+                    video_label = f"Advanced Video {advanced_count}"
+
+                st.markdown(f"**[{i + 1}/{total}] {video_label}** — `{vid_file.name}`")
 
                 in_path = os.path.join(
                     UPLOADED_FOLDER, f"{uuid.uuid4().hex}_{vid_file.name}"
@@ -619,28 +626,29 @@ with tab_script:
                             test_seconds=0,
                             conf=script_conf,
                         )
-                    results.append((vid_file.name, out_path, mode))
+                    results.append((video_label, out_path, mode))
                     st.success("✓ Done")
                 except Exception as e:
                     st.error(f"✗ Failed: {e}")
-                    results.append((vid_file.name, None, mode))
+                    results.append((video_label, None, mode))
 
             st.divider()
             st.markdown("### ⬇  Downloads")
-            for name, out_path, mode in results:
+            for video_label, out_path, mode in results:
                 if out_path is None:
-                    st.markdown(f"❌ `{name}` — processing failed")
+                    st.markdown(f"❌ `{video_label}` — processing failed")
                     continue
                 badge = (
                     '<span class="badge badge-green">● Simple</span>'
                     if mode == "simple"
                     else '<span class="badge badge-orange">● Advanced</span>'
                 )
-                st.markdown(f"`{name}` &nbsp; {badge}", unsafe_allow_html=True)
-                out_filename = f"{'lane' if mode == 'simple' else 'advanced'}_{name}"
+                st.markdown(f"**{video_label}** &nbsp; {badge}", unsafe_allow_html=True)
+                # e.g. simple_video_1.mp4 / advanced_video_1.mp4
+                out_filename = video_label.lower().replace(" ", "_") + ".mp4"
                 with open(out_path, "rb") as f_:
                     st.download_button(
-                        f"⬇  Download {name}",
+                        f"⬇  Download {video_label}",
                         data=f_,
                         file_name=out_filename,
                         mime="video/mp4",
