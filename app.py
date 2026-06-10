@@ -109,11 +109,61 @@ ALL_CLASSES = {
 
 CLASS_GROUPS = {
     "All objects": set(ALL_CLASSES.keys()),
+    "Road Scene": {
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12,
+    },  # vehicles + traffic signs + people
     "Vehicles": {1, 2, 3, 4, 5, 6, 7, 8},
+    "Traffic Signs": {
+        9,
+        10,
+        11,
+        12,
+    },  # traffic light, fire hydrant, stop sign, parking meter
     "People": {0},
     "Animals": {14, 15, 16, 17, 18, 19, 20, 21, 22, 23},
     "Electronics": {62, 63, 64, 65, 66, 67, 68, 69, 70},
 }
+
+# BGR colours per class — purple family for vehicles, red for people,
+# yellow for signs, green for animals, orange fallback
+CLASS_COLORS = {
+    0: (50, 50, 220),  # person        — red
+    1: (230, 80, 180),  # bicycle       — violet
+    2: (220, 30, 150),  # car           — purple
+    3: (210, 60, 200),  # motorcycle    — magenta-purple
+    4: (190, 20, 130),  # airplane      — deep purple
+    5: (200, 10, 100),  # bus           — dark purple
+    6: (170, 0, 90),  # train         — darker purple
+    7: (215, 40, 160),  # truck         — purple
+    8: (180, 70, 200),  # boat          — light purple
+    9: (0, 220, 255),  # traffic light — yellow
+    10: (0, 180, 80),  # fire hydrant  — green
+    11: (0, 60, 255),  # stop sign     — orange-red
+    12: (0, 200, 210),  # parking meter — gold
+    13: (120, 200, 100),  # bench         — light green
+    14: (0, 200, 0),  # bird          — green
+    15: (0, 180, 50),  # cat           — green
+    16: (0, 160, 30),  # dog           — green
+    17: (20, 140, 0),  # horse         — dark green
+    18: (40, 160, 20),  # sheep         — green
+    19: (10, 150, 10),  # cow           — green
+    20: (0, 120, 0),  # elephant      — dark green
+    21: (0, 100, 10),  # bear          — dark green
+    22: (60, 180, 60),  # zebra         — green
+    23: (80, 200, 80),  # giraffe       — light green
+}
+DEFAULT_COLOR = (0, 165, 255)  # orange fallback for unlisted classes
 
 INFERENCE_BATCH = 8
 
@@ -138,21 +188,24 @@ def _should_skip(frame_idx, frame_skip):
 
 
 def draw_boxes(bgr_frame, results, active_classes):
-    """Draw bounding boxes and labels on a BGR frame."""
+    """Draw bounding boxes with per-class colours on a BGR frame."""
     for box in results.boxes:
         cls_id = int(box.cls[0])
         if cls_id not in active_classes:
             continue
         conf = float(box.conf[0])
+        color = CLASS_COLORS.get(cls_id, DEFAULT_COLOR)
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         label = f"{ALL_CLASSES.get(cls_id, cls_id)} {conf:.2f}"
-        cv2.rectangle(bgr_frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+        # Box
+        cv2.rectangle(bgr_frame, (x1, y1), (x2, y2), color, 2)
+        # Filled label background
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
         cv2.rectangle(
             bgr_frame,
             (x1, max(y1 - th - 6, 0)),
             (x1 + tw + 4, max(y1, th + 6)),
-            (0, 165, 255),
+            color,
             -1,
         )
         cv2.putText(
@@ -288,7 +341,10 @@ with st.sidebar:
 
     st.markdown("**Detect**")
     group = st.selectbox(
-        "Class group", list(CLASS_GROUPS.keys()), label_visibility="collapsed"
+        "Class group",
+        list(CLASS_GROUPS.keys()),
+        index=1,  # default: Road Scene
+        label_visibility="collapsed",
     )
     active_classes = CLASS_GROUPS[group]
     st.divider()
