@@ -1,7 +1,6 @@
-numpy<2.0
+numpy
 pandas
 matplotlib
-tensorflow==2.17.0
 Pillow
 opencv-python-headless
 ultralytics
